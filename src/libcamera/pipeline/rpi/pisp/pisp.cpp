@@ -1688,7 +1688,7 @@ void PiSPCameraData::cfeBufferDequeue(FrameBuffer *buffer)
 			do16BitEndianSwap(mem, width, height, stride);
 			dmabufSyncEnd(buffer->planes()[0].fd);
 		}
-		
+
 		/* Get frame wall clock. */
 		auto now = std::chrono::system_clock::now();
 		auto durNow = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch());
