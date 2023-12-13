@@ -65,6 +65,7 @@ struct PrepareParams {
 	libcamera.ControlList requestControls;
 	uint32 ipaContext;
 	uint32 delayContext;
+	uint32 frameSequence;
 };
 
 struct ProcessParams {

@@ -50,6 +50,6 @@ controls:
   - SyncFrameWallClock:
       type: int64_t
       description: |
-        Wall clock time
+        Wall clock time (in micro seconds)
 
 ...

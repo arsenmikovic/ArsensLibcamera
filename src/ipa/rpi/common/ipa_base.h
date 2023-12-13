@@ -95,6 +95,7 @@ private:
 	void applyControls(const ControlList &controls);
 	virtual void handleControls(const ControlList &controls) = 0;
 	void fillDeviceStatus(const ControlList &sensorControls, unsigned int ipaContext);
+	void fillSyncParams(const PrepareParams &params, unsigned int ipaContext);
 	void reportMetadata(unsigned int ipaContext);
 	void applyFrameDurations(utils::Duration minFrameDuration, utils::Duration maxFrameDuration);
 	void applyAGC(const struct AgcStatus *agcStatus, ControlList &ctrls);

@@ -1,25 +1,21 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
- * Copyright (C) 2019-2021, Raspberry Pi Ltd
+ * Copyright (C) 2023, Raspberry Pi Ltd
  *
- * device_status.h - device (image sensor) status
+ * sync_status.h - Sync algorithm params and status structures
  */
 #pragma once
 
-#include <chrono>
-#include <iostream>
-#include <optional>
-
 #include <libcamera/base/utils.h>
 
-/*
- * Definition of "device metadata" which stores things like shutter time and
- * analogue gain that downstream control algorithms will want to know.
- */
-
-struct DeviceStatus {
-		/* Wall clock time for this frame */
-	std::chrono::microseconds wallClock;
+struct SyncParams {
+	/* Wall clock time for this frame */
+	uint64_t wallClock;
 	/* Capture sequence number */
-        uint64_t sequence;
+	uint64_t sequence;
 };
+
+struct SyncStatus {
+	libcamera::utils::Duration frameDurationOffset;
+};
+

@@ -7,6 +7,7 @@
 #include "sync.h"
 
 #include <cctype>
+#include <chrono>
 #include <fcntl.h>
 #include <map>
 #include <strings.h>
@@ -15,6 +16,9 @@
 
 #include <libcamera/base/log.h>
 
+#include "sync_status.h"
+
+using namespace std::chrono_literals;
 using namespace RPiController;
 using namespace libcamera;
 
@@ -24,10 +28,17 @@ LOG_DEFINE_CATEGORY(RPiSync)
 
 const char *DefaultGroup = "239.255.255.250";
 constexpr unsigned int DefaultPort = 32723;
+constexpr unsigned int DefaultSyncPeriod = 30;
 
 Sync::Sync(Controller *controller)
-	: SyncAlgorithm(controller), mode_(Mode::Off), socket_(-1)
+	: SyncAlgorithm(controller), mode_(Mode::Off), socket_(-1), frameDuration_(0s), frameCount_(0)
 {
+}
+
+Sync::~Sync()
+{
+	if (socket_ >= 0)
+		close(socket_);
 }
 
 char const *Sync::name() const
@@ -56,6 +67,7 @@ int Sync::read(const libcamera::YamlObject &params)
 
 	group_ = params["group"].get<std::string>(DefaultGroup);
 	port_ = params["port"].get<uint16_t>(DefaultPort);
+	syncPeriod_ = params["sync_period"].get<uint32_t>(DefaultSyncPeriod);
 
 	return 0;
 }
@@ -105,26 +117,54 @@ err:
 	socket_ = -1;
 }
 
-void Sync::process([[maybe_unused]] StatisticsPtr &stats, [[maybe_unused]] Metadata *imageMetadata)
+void Sync::process([[maybe_unused]] StatisticsPtr &stats, Metadata *imageMetadata)
 {
-	static int count = 0;
-	std::string msg = "Frame: " + std::to_string(count++);
+	SyncPayload payload;
+	SyncParams local;
+	imageMetadata->get("sync.params", local);
 
-	if (mode_ == Mode::Server) {
-		if (sendto(socket_, msg.c_str(), msg.size(), 0, (const sockaddr *)&addr_, sizeof(addr_)) < 0)
-			LOG(RPiSync, Error) << "Send error!";
-                else
-                        LOG(RPiSync, Info) << "Sent message: " << msg;
-	} else if (mode_ == Mode::Client) {
-		std::vector<char> rx(256);
-		socklen_t addrlen = sizeof(addr_);
-
-		if (recvfrom(socket_, rx.data(), rx.size(), 0, (struct sockaddr *) &addr_, &addrlen) < 0)
-				LOG(RPiSync, Error) << "Receive error!";
-                else
-                        	LOG(RPiSync, Info) << "Receive message: " << std::string(rx.begin(), rx.end());
+	if (!frameDuration_) {
+		LOG(RPiSync, Error) << "Sync frame duration not set!";
+		return;
 	}
+
+
+	if (mode_ == Mode::Server && !(frameCount_ % syncPeriod_)) {
+		payload.sequence = local.sequence;
+		payload.wallClock = local.wallClock;
+		payload.nextSequence = local.sequence + syncPeriod_;
+		payload.nextWallClock = local.wallClock + frameDuration_.get<std::micro>() * syncPeriod_;
+
+		if (sendto(socket_, &local, sizeof(local), 0, (const sockaddr *)&addr_, sizeof(addr_)) < 0)
+			LOG(RPiSync, Error) << "Send error!";
+		else
+			LOG(RPiSync, Info) << "Sent message: seq " << payload.sequence << " ts " << payload.wallClock
+					   << " : next seq " << payload.nextSequence << " ts " << payload.nextWallClock;
+	} else if (mode_ == Mode::Client) {
+
+		socklen_t addrlen = sizeof(addr_);
+		if (recvfrom(socket_, &payload, sizeof(payload), 0, (struct sockaddr *)&addr_, &addrlen) > 0) {
+			LOG(RPiSync, Info) << "Receive message: seq " << payload.sequence << " ts " << payload.wallClock
+					   << " : next seq " << payload.nextSequence << " ts " << payload.nextWallClock;
+
+
+			//SyncStatus status;
+			//status.frameDurationOffset = (local.wallClock - remote.wallClock) * 1us;
+			//imageMetadata->set("sync.status", status);
+
+			//LOG(RPiSync, Info) << "Current frame  : seq " << local.sequence << " ts " << local.wallClock << "us"
+			//		   << " delta " << local.wallClock - remote.wallClock << "us";
+		}
+	}
+
+	frameCount_++;
 }
+
+void Sync::setFrameDuration(libcamera::utils::Duration frameDuration)
+{
+	frameDuration_ = frameDuration;
+	LOG(RPiSync, Info) << "frame duration is " << frameDuration_.get<std::micro>();
+};
 
 /* Register algorithm with the system. */
 static Algorithm *create(Controller *controller)

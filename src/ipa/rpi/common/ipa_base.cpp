@@ -28,6 +28,8 @@
 #include "controller/lux_status.h"
 #include "controller/sharpen_algorithm.h"
 #include "controller/statistics.h"
+#include "controller/sync_algorithm.h"
+#include "controller/sync_status.h"
 
 namespace libcamera {
 
@@ -387,6 +389,7 @@ void IpaBase::prepareIsp(const PrepareParams &params)
 
 	rpiMetadata.clear();
 	fillDeviceStatus(params.sensorControls, ipaContext);
+	fillSyncParams(params, ipaContext);
 
 	if (params.buffers.embedded) {
 		/*
@@ -484,6 +487,13 @@ void IpaBase::processStats(const ProcessParams &params)
 
 		helper_->process(statistics, rpiMetadata);
 		controller_.process(statistics, &rpiMetadata);
+		
+		struct SyncStatus syncStatus;
+		if (rpiMetadata.get("sync.status", syncStatus) == 0) {
+			LOG(IPARPI, Info) << "Adjusting frame duration by " << syncStatus.frameDurationOffset;
+			applyFrameDurations(minFrameDuration_ + syncStatus.frameDurationOffset,
+					    maxFrameDuration_ += syncStatus.frameDurationOffset);
+		}
 
 		struct AgcStatus agcStatus;
 		if (rpiMetadata.get("agc.status", agcStatus) == 0) {
@@ -1283,6 +1293,19 @@ void IpaBase::fillDeviceStatus(const ControlList &sensorControls, unsigned int i
 	rpiMetadata_[ipaContext].set("device.status", deviceStatus);
 }
 
+void IpaBase::fillSyncParams(const PrepareParams &params, unsigned int ipaContext)
+{
+	RPiController::SyncAlgorithm *sync = dynamic_cast<RPiController::SyncAlgorithm *>(
+			controller_.getAlgorithm("sync"));
+	if (!sync)
+		return;
+
+	SyncParams syncParams;
+	syncParams.sequence = params.frameSequence;
+	syncParams.wallClock = *params.sensorControls.get(controls::rpi::SyncFrameWallClock);
+	rpiMetadata_[ipaContext].set("sync.params", syncParams);
+}
+
 void IpaBase::reportMetadata(unsigned int ipaContext)
 {
 	RPiController::Metadata &rpiMetadata = rpiMetadata_[ipaContext];
@@ -1456,6 +1479,11 @@ void IpaBase::applyFrameDurations(Duration minFrameDuration, Duration maxFrameDu
 	RPiController::AgcAlgorithm *agc = dynamic_cast<RPiController::AgcAlgorithm *>(
 		controller_.getAlgorithm("agc"));
 	agc->setMaxShutter(maxShutter);
+
+	RPiController::SyncAlgorithm *sync = dynamic_cast<RPiController::SyncAlgorithm *>(
+			controller_.getAlgorithm("sync"));
+	if (sync)
+		sync->setFrameDuration(minFrameDuration_);
 }
 
 void IpaBase::applyAGC(const struct AgcStatus *agcStatus, ControlList &ctrls)

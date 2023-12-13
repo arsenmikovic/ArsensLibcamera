@@ -2279,6 +2279,7 @@ void PiSPCameraData::tryRunPipeline()
 	params.delayContext = job.delayContext;
 	params.sensorControls = std::move(job.sensorControls);
 	params.requestControls = request->controls();
+	params.frameSequence = job.buffers[&cfe_[Cfe::Output0]]->metadata().sequence;
 
 	if (sensorMetadata_) {
 		unsigned int embeddedId =
