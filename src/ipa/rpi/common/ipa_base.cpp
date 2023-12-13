@@ -1468,8 +1468,6 @@ void IpaBase::applyFrameDurations(Duration minFrameDuration, Duration maxFrameDu
 				       mode_.minFrameDuration, mode_.maxFrameDuration);
 	maxFrameDuration_ = std::max(maxFrameDuration_, minFrameDuration_);
 
-	LOG(IPARPI, Info) << "frame durations : min " << minFrameDuration_ << " max " << maxFrameDuration_;
-
 	/* Return the validated limits via metadata. */
 	libcameraMetadata_.set(controls::FrameDurationLimits,
 			       { static_cast<int64_t>(minFrameDuration_.get<std::micro>()),
@@ -1518,7 +1516,6 @@ void IpaBase::applyAGC(const struct AgcStatus *agcStatus, ControlList &ctrls)
 			   << agcStatus->analogueGain << " (Gain Code: "
 			   << gainCode << ")";
 
-	LOG(IPARPI, Info) << "Applying vblank: " << static_cast<int32_t>(vblank);
 	ctrls.set(V4L2_CID_VBLANK, static_cast<int32_t>(vblank));
 	ctrls.set(V4L2_CID_EXPOSURE, exposureLines);
 	ctrls.set(V4L2_CID_ANALOGUE_GAIN, gainCode);
