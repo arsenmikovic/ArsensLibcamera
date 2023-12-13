@@ -128,33 +128,59 @@ void Sync::process([[maybe_unused]] StatisticsPtr &stats, Metadata *imageMetadat
 		return;
 	}
 
-
 	if (mode_ == Mode::Server && !(frameCount_ % syncPeriod_)) {
 		payload.sequence = local.sequence;
 		payload.wallClock = local.wallClock;
 		payload.nextSequence = local.sequence + syncPeriod_;
 		payload.nextWallClock = local.wallClock + frameDuration_.get<std::micro>() * syncPeriod_;
 
-		if (sendto(socket_, &local, sizeof(local), 0, (const sockaddr *)&addr_, sizeof(addr_)) < 0)
+		if (sendto(socket_, &payload, sizeof(payload), 0, (const sockaddr *)&addr_, sizeof(addr_)) < 0)
 			LOG(RPiSync, Error) << "Send error!";
 		else
 			LOG(RPiSync, Info) << "Sent message: seq " << payload.sequence << " ts " << payload.wallClock
 					   << " : next seq " << payload.nextSequence << " ts " << payload.nextWallClock;
 	} else if (mode_ == Mode::Client) {
 
+		static int frames = 0;
+
 		socklen_t addrlen = sizeof(addr_);
-		if (recvfrom(socket_, &payload, sizeof(payload), 0, (struct sockaddr *)&addr_, &addrlen) > 0) {
-			LOG(RPiSync, Info) << "Receive message: seq " << payload.sequence << " ts " << payload.wallClock
-					   << " : next seq " << payload.nextSequence << " ts " << payload.nextWallClock;
+		if (recvfrom(socket_, &lastPayload_, sizeof(lastPayload_), 0, (struct sockaddr *)&addr_, &addrlen) > 0) {
+			LOG(RPiSync, Info) << "Receive message: seq " << lastPayload_.sequence << " ts " << lastPayload_.wallClock
+					   << " : next seq " << lastPayload_.nextSequence << " ts " << lastPayload_.nextWallClock;
 
-
-			//SyncStatus status;
 			//status.frameDurationOffset = (local.wallClock - remote.wallClock) * 1us;
 			//imageMetadata->set("sync.status", status);
 
 			//LOG(RPiSync, Info) << "Current frame  : seq " << local.sequence << " ts " << local.wallClock << "us"
 			//		   << " delta " << local.wallClock - remote.wallClock << "us";
+			state_ = State::Correcting;
+			frames = 0;
 		}
+
+		libcamera::utils::Duration lastPayloadFrameDuration = (lastPayload_.nextWallClock - lastPayload_.wallClock) * 1us / (lastPayload_.nextSequence - lastPayload_.sequence);
+		libcamera::utils::Duration delta = (local.wallClock * 1us) - ((lastPayload_.wallClock * 1us) + frames * lastPayloadFrameDuration);
+
+		if (state_ == State::Correcting ||
+		    (state_ == State::Idle && (frameCount_ % syncPeriod_) <= syncPeriod_ / 2 ))  {
+			SyncStatus status;
+			status.frameDurationOffset = std::min<libcamera::utils::Duration>(delta, lastPayloadFrameDuration / 2);
+			status.frameDurationFixed = 0s;
+			LOG(RPiSync, Info) << "Correcting offset " << status.frameDurationOffset;
+			imageMetadata->set("sync.status", status);
+			state_ = State::Stabilising;
+		}
+		else if (state_ == State::Stabilising) {
+			SyncStatus status;
+			status.frameDurationOffset = 0s;
+			status.frameDurationFixed = lastPayloadFrameDuration;
+			LOG(RPiSync, Info) << "Stabilising duration " << status.frameDurationFixed;			
+			imageMetadata->set("sync.status", status);
+			state_ = State::Idle;
+		}
+
+		LOG(RPiSync, Info) << "Current frame : seq " << local.sequence << " ts " << local.wallClock << "us"
+				   << " frame offset " << frames << " est delta " << delta;
+		frames++;
 	}
 
 	frameCount_++;
@@ -163,7 +189,6 @@ void Sync::process([[maybe_unused]] StatisticsPtr &stats, Metadata *imageMetadat
 void Sync::setFrameDuration(libcamera::utils::Duration frameDuration)
 {
 	frameDuration_ = frameDuration;
-	LOG(RPiSync, Info) << "frame duration is " << frameDuration_.get<std::micro>();
 };
 
 /* Register algorithm with the system. */

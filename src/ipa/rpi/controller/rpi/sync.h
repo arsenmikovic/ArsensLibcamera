@@ -15,11 +15,11 @@ namespace RPiController {
 
 struct SyncPayload {
 	/* Wall clock time for this frame */
-	uint64_t wallClock;
+	int64_t wallClock;
 	/* Capture sequence number */
 	uint64_t sequence;
 	/* Wall clock time for the next sync period */
-	uint64_t nextWallClock;
+	int64_t nextWallClock;
 	/* Capture sequence number at the next sync period */
 	uint64_t nextSequence;
 };
@@ -36,6 +36,10 @@ public:
 	void setFrameDuration(libcamera::utils::Duration frameDuration) override;
 
 private:
+
+	enum class State { Idle, Correcting, Stabilising };
+
+	State state_;
 	Mode mode_;
 	std::string group_;
 	uint16_t port_;
@@ -44,6 +48,8 @@ private:
 	int socket_;
 	libcamera::utils::Duration frameDuration_;
 	unsigned int frameCount_;
+	unsigned int syncMark_;
+	SyncPayload lastPayload_;
 };
 
 } /* namespace RPiController */
