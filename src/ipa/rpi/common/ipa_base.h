@@ -98,7 +98,8 @@ private:
 	void fillSyncParams(const PrepareParams &params, unsigned int ipaContext);
 	void reportMetadata(unsigned int ipaContext);
 	void applyFrameDurations(utils::Duration minFrameDuration, utils::Duration maxFrameDuration);
-	void applyAGC(const struct AgcStatus *agcStatus, ControlList &ctrls);
+	void applyAGC(const struct AgcStatus *agcStatus, ControlList &ctrls,
+		      utils::Duration frameDurationOffset = utils::Duration(0));
 
 	std::map<unsigned int, MappedFrameBuffer> buffers_;
 

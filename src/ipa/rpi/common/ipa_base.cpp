@@ -488,22 +488,18 @@ void IpaBase::processStats(const ProcessParams &params)
 		helper_->process(statistics, rpiMetadata);
 		controller_.process(statistics, &rpiMetadata);
 		
+		Duration offset(0s);
 		struct SyncStatus syncStatus;
 		if (rpiMetadata.get("sync.status", syncStatus) == 0) {
-			if (syncStatus.frameDurationOffset) {
-				LOG(IPARPI, Info) << "Adjusting frame duration by " << syncStatus.frameDurationOffset;				
-				applyFrameDurations(minFrameDuration_ - syncStatus.frameDurationOffset,
-						    maxFrameDuration_ - syncStatus.frameDurationOffset);
-			} else {
-				LOG(IPARPI, Info) << "Setting frame duration for " << syncStatus.frameDurationFixed;				
-				applyFrameDurations(syncStatus.frameDurationFixed, syncStatus.frameDurationFixed);
-			}
+			if (minFrameDuration_ != maxFrameDuration_)
+				LOG(IPARPI, Error) << "Sync algorithm enabled with variable framerate. " << minFrameDuration_ << " " << maxFrameDuration_;
+			offset = syncStatus.frameDurationOffset;
 		}
 
 		struct AgcStatus agcStatus;
 		if (rpiMetadata.get("agc.status", agcStatus) == 0) {
 			ControlList ctrls(sensorCtrls_);
-			applyAGC(&agcStatus, ctrls);
+			applyAGC(&agcStatus, ctrls, offset);
 			setDelayedControls.emit(ctrls, ipaContext);
 			setCameraTimeoutValue();
 		}
@@ -1487,11 +1483,13 @@ void IpaBase::applyFrameDurations(Duration minFrameDuration, Duration maxFrameDu
 
 	RPiController::SyncAlgorithm *sync = dynamic_cast<RPiController::SyncAlgorithm *>(
 			controller_.getAlgorithm("sync"));
-	if (sync)
-		sync->setFrameDuration((mode_.height + vblank) * ((mode_.width + hblank) * 1.0s / mode_.pixelRate) );
+	if (sync) {
+		LOG(IPARPI, Info) << "setting sync frame duration to  " << (mode_.height + vblank) * ((mode_.width + hblank) * 1.0s / mode_.pixelRate);
+		sync->setFrameDuration((mode_.height + vblank) * ((mode_.width + hblank) * 1.0s / mode_.pixelRate));
+	}
 }
 
-void IpaBase::applyAGC(const struct AgcStatus *agcStatus, ControlList &ctrls)
+void IpaBase::applyAGC(const struct AgcStatus *agcStatus, ControlList &ctrls, Duration frameDurationOffset)
 {
 	const int32_t minGainCode = helper_->gainCode(mode_.minAnalogueGain);
 	const int32_t maxGainCode = helper_->gainCode(mode_.maxAnalogueGain);
@@ -1506,7 +1504,8 @@ void IpaBase::applyAGC(const struct AgcStatus *agcStatus, ControlList &ctrls)
 
 	/* getBlanking might clip exposure time to the fps limits. */
 	Duration exposure = agcStatus->shutterTime;
-	auto [vblank, hblank] = helper_->getBlanking(exposure, minFrameDuration_, maxFrameDuration_);
+	auto [vblank, hblank] = helper_->getBlanking(exposure, minFrameDuration_ - frameDurationOffset,
+						     maxFrameDuration_ - frameDurationOffset);
 	int32_t exposureLines = helper_->exposureLines(exposure,
 						       helper_->hblankToLineLength(hblank));
 
@@ -1516,6 +1515,7 @@ void IpaBase::applyAGC(const struct AgcStatus *agcStatus, ControlList &ctrls)
 			   << agcStatus->analogueGain << " (Gain Code: "
 			   << gainCode << ")";
 
+	//LOG(IPARPI, Info) << "vblank " << static_cast<int32_t>(vblank) << " frame duration " << minFrameDuration_;
 	ctrls.set(V4L2_CID_VBLANK, static_cast<int32_t>(vblank));
 	ctrls.set(V4L2_CID_EXPOSURE, exposureLines);
 	ctrls.set(V4L2_CID_ANALOGUE_GAIN, gainCode);

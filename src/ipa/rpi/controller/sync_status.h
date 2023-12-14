@@ -17,6 +17,5 @@ struct SyncParams {
 
 struct SyncStatus {
 	libcamera::utils::Duration frameDurationOffset;
-	libcamera::utils::Duration frameDurationFixed;
 };
 

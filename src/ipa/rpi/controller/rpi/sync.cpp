@@ -146,8 +146,9 @@ void Sync::process([[maybe_unused]] StatisticsPtr &stats, Metadata *imageMetadat
 	} else if (mode_ == Mode::Client) {
 
 		static int frames = 0;
-
 		socklen_t addrlen = sizeof(addr_);
+
+		static int lastWallClock = 0;
 
 		while (true) {
 			int ret = recvfrom(socket_, &lastPayload_, sizeof(lastPayload_), 0, (struct sockaddr *)&addr_, &addrlen);
@@ -172,7 +173,6 @@ void Sync::process([[maybe_unused]] StatisticsPtr &stats, Metadata *imageMetadat
 		if (state_ == State::Correcting)  {
 			SyncStatus status;
 			status.frameDurationOffset = delta_mod;
-			status.frameDurationFixed = 0s;
 			state_ = State::Stabilising;
 			LOG(RPiSync, Info) << "Correcting offset " << status.frameDurationOffset;
 			imageMetadata->set("sync.status", status);
@@ -180,8 +180,7 @@ void Sync::process([[maybe_unused]] StatisticsPtr &stats, Metadata *imageMetadat
 		} else if (state_ == State::Stabilising) {
 			SyncStatus status;
 			status.frameDurationOffset = 0s;
-			status.frameDurationFixed = lastPayloadFrameDuration;
-			LOG(RPiSync, Info) << "Stabilising duration " << status.frameDurationFixed;			
+			LOG(RPiSync, Info) << "Stabilising duration ";		
 			imageMetadata->set("sync.status", status);
 			state_ = State::Idle;
 		}
