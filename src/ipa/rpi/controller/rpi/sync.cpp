@@ -28,7 +28,7 @@ LOG_DEFINE_CATEGORY(RPiSync)
 
 const char *DefaultGroup = "239.255.255.250";
 constexpr unsigned int DefaultPort = 32723;
-constexpr unsigned int DefaultSyncPeriod = 90;
+constexpr unsigned int DefaultSyncPeriod = 30;
 
 Sync::Sync(Controller *controller)
 	: SyncAlgorithm(controller), mode_(Mode::Off), socket_(-1), frameDuration_(0s), frameCount_(0)
@@ -129,15 +129,19 @@ void Sync::process([[maybe_unused]] StatisticsPtr &stats, Metadata *imageMetadat
 	}
 
 	if (mode_ == Mode::Server && !(frameCount_ % syncPeriod_)) {
+		static int lastWallClock = local.wallClock;
 		payload.sequence = local.sequence;
 		payload.wallClock = local.wallClock;
 		payload.nextSequence = local.sequence + syncPeriod_;
 		payload.nextWallClock = local.wallClock + frameDuration_.get<std::micro>() * syncPeriod_;
 
+		int jitter = payload.wallClock - lastWallClock;
+		lastWallClock = payload.nextWallClock;
+
 		if (sendto(socket_, &payload, sizeof(payload), 0, (const sockaddr *)&addr_, sizeof(addr_)) < 0)
 			LOG(RPiSync, Error) << "Send error!";
 		else
-			LOG(RPiSync, Info) << "Sent message: seq " << payload.sequence << " ts " << payload.wallClock
+			LOG(RPiSync, Info) << "Sent message: seq " << payload.sequence << " ts " << payload.wallClock << " jitter " << jitter << "us"
 					   << " : next seq " << payload.nextSequence << " ts " << payload.nextWallClock;
 	} else if (mode_ == Mode::Client) {
 

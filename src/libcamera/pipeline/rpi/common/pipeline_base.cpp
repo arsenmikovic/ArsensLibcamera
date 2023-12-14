@@ -676,6 +676,7 @@ int PipelineHandlerBase::start(Camera *camera, const ControlList *controls)
 	 */
 	data->delayedCtrls_->reset(0);
 	data->state_ = CameraData::State::Idle;
+	data->frameWallClock_ = {};
 
 	/* Enable SOF event generation. */
 	data->frontendDevice()->setFrameStartEnabled(true);
@@ -1353,6 +1354,11 @@ void CameraData::cameraTimeout()
 
 void CameraData::frameStarted(uint32_t sequence)
 {
+	/* Get frame wall clock. */
+	auto now = std::chrono::system_clock::now();
+	auto durNow = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch());
+	frameWallClock_.emplace(sequence, durNow);
+
 	LOG(RPI, Debug) << "Frame start " << sequence;
 
 	/* Write any controls for the next frame as soon as we can. */
