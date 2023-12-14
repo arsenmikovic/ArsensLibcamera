@@ -148,8 +148,6 @@ void Sync::process([[maybe_unused]] StatisticsPtr &stats, Metadata *imageMetadat
 		static int frames = 0;
 		socklen_t addrlen = sizeof(addr_);
 
-		static int lastWallClock = 0;
-
 		while (true) {
 			int ret = recvfrom(socket_, &lastPayload_, sizeof(lastPayload_), 0, (struct sockaddr *)&addr_, &addrlen);
 
