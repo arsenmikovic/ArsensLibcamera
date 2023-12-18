@@ -139,13 +139,10 @@ void Sync::process([[maybe_unused]] StatisticsPtr &stats, Metadata *imageMetadat
 	}
 
 	if (mode_ == Mode::Server) {
-
 		if (!syncReady_ && !(readyFrame_ - frameCount_)) {
 			LOG(RPiSync, Info) << "Sync ready at frame " << frameCount_;
 			syncReady_ = true;
 		}
-		else
-			syncReady_ = false;
 
 		if (!(frameCount_ % syncPeriod_)) {
 			static int lastWallClock = local.wallClock;
@@ -187,7 +184,7 @@ void Sync::process([[maybe_unused]] StatisticsPtr &stats, Metadata *imageMetadat
 					frames = 0;						
 
 					if (!syncReady_ && !readyCountdown_)
-						readyCountdown_ = lastPayload_.readyFrame + lastPayload_.sequence;
+						readyCountdown_ = lastPayload_.readyFrame + frameCount_;
 
 				} else
 					break;
