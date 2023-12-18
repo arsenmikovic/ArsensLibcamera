@@ -140,7 +140,7 @@ void Sync::process([[maybe_unused]] StatisticsPtr &stats, Metadata *imageMetadat
 
 	if (mode_ == Mode::Server) {
 		if (!syncReady_ && !(readyFrame_ - frameCount_)) {
-			LOG(RPiSync, Info) << "Sync ready at frame " << frameCount_;
+			LOG(RPiSync, Info) << "Sync ready at frame " << frameCount_ << " ts " <<  payload.wallClock;
 			syncReady_ = true;
 		}
 
@@ -166,14 +166,11 @@ void Sync::process([[maybe_unused]] StatisticsPtr &stats, Metadata *imageMetadat
 		static int frames = 0;
 		socklen_t addrlen = sizeof(addr_);
 
-		static bool seen_packet = false;
-
 		while (true) {
 			int64_t lastWallClock = lastPayload_.nextWallClock;
 			int ret = recvfrom(socket_, &lastPayload_, sizeof(lastPayload_), 0, (struct sockaddr *)&addr_, &addrlen);
 
 			if (ret > 0) {
-				seen_packet =  true;
 				int jitter = lastPayload_.wallClock - lastWallClock;
 				LOG(RPiSync, Info) << "Receive message: seq " << lastPayload_.sequence << " ts " << lastPayload_.wallClock
 						<< " server jitter " << jitter << "us"
@@ -183,7 +180,7 @@ void Sync::process([[maybe_unused]] StatisticsPtr &stats, Metadata *imageMetadat
 					state_ = State::Correcting;
 					frames = 0;						
 
-					if (!syncReady_ && !readyCountdown_)
+					if (!syncReady_)
 						readyCountdown_ = lastPayload_.readyFrame + frameCount_;
 
 				} else
@@ -208,15 +205,12 @@ void Sync::process([[maybe_unused]] StatisticsPtr &stats, Metadata *imageMetadat
 			state_ = State::Idle;
 		}
 
-		if (!syncReady_ && seen_packet) {
-			syncReady_ = !readyCountdown_;
-			if (syncReady_)
-				LOG(RPiSync, Info) << "Sync ready at frame " << frameCount_;
+		if (!syncReady_ && readyCountdown_ && !(readyCountdown_ - frameCount_)) {
+			syncReady_ = true;
+			LOG(RPiSync, Info) << "Sync ready at frame " << frameCount_ << " ts " <<  payload.wallClock;
 		}				
 
 		frames++;
-		if (readyCountdown_)
-			readyCountdown_--;
 	}
 
 	status.ready = syncReady_;
