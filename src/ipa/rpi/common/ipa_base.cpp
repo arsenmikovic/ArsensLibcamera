@@ -494,6 +494,12 @@ void IpaBase::processStats(const ProcessParams &params)
 			if (minFrameDuration_ != maxFrameDuration_)
 				LOG(IPARPI, Error) << "Sync algorithm enabled with variable framerate. " << minFrameDuration_ << " " << maxFrameDuration_;
 			offset = syncStatus.frameDurationOffset;
+			if (!syncStatus.ready) {
+				libcameraMetadata_.set(controls::rpi::SyncWait, true);
+				LOG(IPARPI, Error) << "Sync WAIT";
+			}
+			else
+				LOG(IPARPI, Error) << "Sync READY";
 		}
 
 		struct AgcStatus agcStatus;

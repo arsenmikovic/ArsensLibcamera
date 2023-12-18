@@ -22,6 +22,8 @@ struct SyncPayload {
 	int64_t nextWallClock;
 	/* Capture sequence number at the next sync period */
 	uint64_t nextSequence;
+	/* Ready signal */
+	uint32_t readyFrame;
 };
 
 class Sync : public SyncAlgorithm
@@ -32,6 +34,7 @@ public:
 	char const *name() const override;
 	int read(const libcamera::YamlObject &params) override;
 	void initialise() override;
+	void switchMode(CameraMode const &cameraMode, Metadata *metadata) override;
 	void process(StatisticsPtr &stats, Metadata *imageMetadata) override;
 	void setFrameDuration(libcamera::utils::Duration frameDuration) override;
 
@@ -44,12 +47,16 @@ private:
 	std::string group_;
 	uint16_t port_;
 	uint32_t syncPeriod_;
+	uint32_t readyFrame_;
+
 	struct sockaddr_in addr_;
 	int socket_;
 	libcamera::utils::Duration frameDuration_;
 	unsigned int frameCount_;
 	unsigned int syncMark_;
 	SyncPayload lastPayload_;
+	unsigned int readyCountdown_;
+	bool syncReady_;
 };
 
 } /* namespace RPiController */

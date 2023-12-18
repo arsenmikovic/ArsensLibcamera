@@ -37,15 +37,10 @@ controls:
 
         \sa StatsOutputEnable
 
-  - SyncServer:
+  - SyncWait:
       type: bool
       description: |
-        Source camera
-
-  - SyncClient:
-      type: bool
-      description: |
-        Client camera
+        is the sync ready?
 
   - SyncFrameWallClock:
       type: int64_t

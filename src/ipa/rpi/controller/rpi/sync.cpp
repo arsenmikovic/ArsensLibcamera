@@ -29,6 +29,7 @@ LOG_DEFINE_CATEGORY(RPiSync)
 const char *DefaultGroup = "239.255.255.250";
 constexpr unsigned int DefaultPort = 32723;
 constexpr unsigned int DefaultSyncPeriod = 30;
+constexpr unsigned int DefaultReadyFrame = 1000;
 
 Sync::Sync(Controller *controller)
 	: SyncAlgorithm(controller), mode_(Mode::Off), socket_(-1), frameDuration_(0s), frameCount_(0)
@@ -68,6 +69,7 @@ int Sync::read(const libcamera::YamlObject &params)
 	group_ = params["group"].get<std::string>(DefaultGroup);
 	port_ = params["port"].get<uint16_t>(DefaultPort);
 	syncPeriod_ = params["sync_period"].get<uint32_t>(DefaultSyncPeriod);
+	readyFrame_ = params["ready_frame"].get<uint32_t>(DefaultReadyFrame);
 
 	return 0;
 }
@@ -117,10 +119,18 @@ err:
 	socket_ = -1;
 }
 
+void Sync::switchMode([[maybe_unused]] CameraMode const &cameraMode, [[maybe_unused]] Metadata *metadata)
+{
+	syncReady_ = false;
+	frameCount_ = 0;
+	readyCountdown_ = 0;
+}
+
 void Sync::process([[maybe_unused]] StatisticsPtr &stats, Metadata *imageMetadata)
 {
 	SyncPayload payload;
 	SyncParams local {};
+	SyncStatus status {};
 	imageMetadata->get("sync.params", local);
 
 	if (!frameDuration_) {
@@ -128,38 +138,57 @@ void Sync::process([[maybe_unused]] StatisticsPtr &stats, Metadata *imageMetadat
 		return;
 	}
 
-	if (mode_ == Mode::Server && !(frameCount_ % syncPeriod_)) {
-		static int lastWallClock = local.wallClock;
-		payload.sequence = local.sequence;
-		payload.wallClock = local.wallClock;
-		payload.nextSequence = local.sequence + syncPeriod_;
-		payload.nextWallClock = local.wallClock + frameDuration_.get<std::micro>() * syncPeriod_;
+	if (mode_ == Mode::Server) {
 
-		int jitter = payload.wallClock - lastWallClock;
-		lastWallClock = payload.nextWallClock;
-
-		if (sendto(socket_, &payload, sizeof(payload), 0, (const sockaddr *)&addr_, sizeof(addr_)) < 0)
-			LOG(RPiSync, Error) << "Send error!";
+		if (!syncReady_ && !(readyFrame_ - frameCount_)) {
+			LOG(RPiSync, Info) << "Sync ready at frame " << frameCount_;
+			syncReady_ = true;
+		}
 		else
-			LOG(RPiSync, Info) << "Sent message: seq " << payload.sequence << " ts " << payload.wallClock << " jitter " << jitter << "us"
-					   << " : next seq " << payload.nextSequence << " ts " << payload.nextWallClock;
+			syncReady_ = false;
+
+		if (!(frameCount_ % syncPeriod_)) {
+			static int lastWallClock = local.wallClock;
+			payload.sequence = local.sequence;
+			payload.wallClock = local.wallClock;
+			payload.nextSequence = local.sequence + syncPeriod_;
+			payload.nextWallClock = local.wallClock + frameDuration_.get<std::micro>() * syncPeriod_;
+			payload.readyFrame = std::max<int32_t>(0, readyFrame_ - frameCount_);
+
+			int jitter = payload.wallClock - lastWallClock;
+			lastWallClock = payload.nextWallClock;
+
+			if (sendto(socket_, &payload, sizeof(payload), 0, (const sockaddr *)&addr_, sizeof(addr_)) < 0)
+				LOG(RPiSync, Error) << "Send error!";
+			else
+				LOG(RPiSync, Info) << "Sent message: seq " << payload.sequence << " ts " << payload.wallClock << " jitter " << jitter << "us"
+						<< " : next seq " << payload.nextSequence << " ts " << payload.nextWallClock << " : ready frame " << payload.readyFrame;
+		}
 	} else if (mode_ == Mode::Client) {
 
 		static int frames = 0;
 		socklen_t addrlen = sizeof(addr_);
+
+		static bool seen_packet = false;
 
 		while (true) {
 			int64_t lastWallClock = lastPayload_.nextWallClock;
 			int ret = recvfrom(socket_, &lastPayload_, sizeof(lastPayload_), 0, (struct sockaddr *)&addr_, &addrlen);
 
 			if (ret > 0) {
+				seen_packet =  true;
 				int jitter = lastPayload_.wallClock - lastWallClock;
 				LOG(RPiSync, Info) << "Receive message: seq " << lastPayload_.sequence << " ts " << lastPayload_.wallClock
 						<< " server jitter " << jitter << "us"
 						<< " : next seq " << lastPayload_.nextSequence << " ts " << lastPayload_.nextWallClock
-						<< " est duration " << (lastPayload_.nextWallClock - lastPayload_.wallClock) * 1us / (lastPayload_.nextSequence - lastPayload_.sequence);
+						<< " est duration " << (lastPayload_.nextWallClock - lastPayload_.wallClock) * 1us / (lastPayload_.nextSequence - lastPayload_.sequence)
+						<< " : readyFrame " << lastPayload_.readyFrame;
 					state_ = State::Correcting;
 					frames = 0;						
+
+					if (!syncReady_ && !readyCountdown_)
+						readyCountdown_ = lastPayload_.readyFrame + lastPayload_.sequence;
+
 				} else
 					break;
 		}
@@ -169,26 +198,32 @@ void Sync::process([[maybe_unused]] StatisticsPtr &stats, Metadata *imageMetadat
 		unsigned int mul = (delta + lastPayloadFrameDuration / 2) / lastPayloadFrameDuration;
 		std::chrono::microseconds delta_mod = delta - mul * lastPayloadFrameDuration;
 		LOG(RPiSync, Info) << "Current frame : seq " << local.sequence << " ts " << local.wallClock << "us"
-				   << " frame offset " << frames << " est delta " << delta << " (mod) " << delta_mod;
+				   << " frame offset " << frames << " est delta " << delta << " (mod) " << delta_mod << " ready countdown " << readyCountdown_;
 
 		if (state_ == State::Correcting)  {
-			SyncStatus status;
 			status.frameDurationOffset = delta_mod;
 			state_ = State::Stabilising;
 			LOG(RPiSync, Info) << "Correcting offset " << status.frameDurationOffset;
-			imageMetadata->set("sync.status", status);
 
 		} else if (state_ == State::Stabilising) {
-			SyncStatus status;
 			status.frameDurationOffset = 0s;
 			LOG(RPiSync, Info) << "Stabilising duration ";		
-			imageMetadata->set("sync.status", status);
 			state_ = State::Idle;
 		}
 
+		if (!syncReady_ && seen_packet) {
+			syncReady_ = !readyCountdown_;
+			if (syncReady_)
+				LOG(RPiSync, Info) << "Sync ready at frame " << frameCount_;
+		}				
+
 		frames++;
+		if (readyCountdown_)
+			readyCountdown_--;
 	}
 
+	status.ready = syncReady_;
+	imageMetadata->set("sync.status", status);
 	frameCount_++;
 }
 
