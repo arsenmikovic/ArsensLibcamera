@@ -120,7 +120,7 @@ err:
 void Sync::process([[maybe_unused]] StatisticsPtr &stats, Metadata *imageMetadata)
 {
 	SyncPayload payload;
-	SyncParams local;
+	SyncParams local {};
 	imageMetadata->get("sync.params", local);
 
 	if (!frameDuration_) {
@@ -149,16 +149,19 @@ void Sync::process([[maybe_unused]] StatisticsPtr &stats, Metadata *imageMetadat
 		socklen_t addrlen = sizeof(addr_);
 
 		while (true) {
+			int64_t lastWallClock = lastPayload_.nextWallClock;
 			int ret = recvfrom(socket_, &lastPayload_, sizeof(lastPayload_), 0, (struct sockaddr *)&addr_, &addrlen);
 
 			if (ret > 0) {
-			LOG(RPiSync, Info) << "Receive message: seq " << lastPayload_.sequence << " ts " << lastPayload_.wallClock
-					   << " : next seq " << lastPayload_.nextSequence << " ts " << lastPayload_.nextWallClock
-					   << " est duration " << (lastPayload_.nextWallClock - lastPayload_.wallClock) * 1us / (lastPayload_.nextSequence - lastPayload_.sequence);
-				state_ = State::Correcting;
-				frames = 0;						
-			} else
-				break;
+				int jitter = lastPayload_.wallClock - lastWallClock;
+				LOG(RPiSync, Info) << "Receive message: seq " << lastPayload_.sequence << " ts " << lastPayload_.wallClock
+						<< " server jitter " << jitter << "us"
+						<< " : next seq " << lastPayload_.nextSequence << " ts " << lastPayload_.nextWallClock
+						<< " est duration " << (lastPayload_.nextWallClock - lastPayload_.wallClock) * 1us / (lastPayload_.nextSequence - lastPayload_.sequence);
+					state_ = State::Correcting;
+					frames = 0;						
+				} else
+					break;
 		}
 
 		std::chrono::microseconds lastPayloadFrameDuration = (lastPayload_.nextWallClock - lastPayload_.wallClock) * 1us / (lastPayload_.nextSequence - lastPayload_.sequence);
