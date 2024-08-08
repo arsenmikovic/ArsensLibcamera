@@ -484,7 +484,6 @@ void IpaBase::processStats(const ProcessParams &params)
 
 		/* reportMetadata() will pick this up and set the FocusFoM metadata */
 		rpiMetadata.set("focus.status", statistics->focusRegions);
-
 		helper_->process(statistics, rpiMetadata);
 		controller_.process(statistics, &rpiMetadata);
 		
@@ -494,8 +493,13 @@ void IpaBase::processStats(const ProcessParams &params)
 			if (minFrameDuration_ != maxFrameDuration_)
 				LOG(IPARPI, Error) << "Sync algorithm enabled with variable framerate. " << minFrameDuration_ << " " << maxFrameDuration_;
 			offset = syncStatus.frameDurationOffset;
-			if (!syncStatus.ready)
+
+			if (!syncStatus.ready) {
 				libcameraMetadata_.set(controls::rpi::SyncWait, true);
+			} else {
+				libcameraMetadata_.set(controls::rpi::SyncWait, false);
+				libcameraMetadata_.set(controls::rpi::SyncLag, syncStatus.syncLag);
+			}
 		}
 
 		struct AgcStatus agcStatus;
@@ -505,7 +509,9 @@ void IpaBase::processStats(const ProcessParams &params)
 			setDelayedControls.emit(ctrls, ipaContext);
 			setCameraTimeoutValue();
 		}
-	}
+	} else
+		LOG(IPARPI, Error) << "Not Running process: pending : " << processPending_;
+
 
 	/*
 	 * If the statistics are not inline the metadata must be returned now,
@@ -734,6 +740,7 @@ void IpaBase::applyControls(const ControlList &controls)
 	using RPiController::ContrastAlgorithm;
 	using RPiController::DenoiseAlgorithm;
 	using RPiController::HdrAlgorithm;
+	using RPiController::SyncAlgorithm;
 
 	/* Clear the return metadata buffer. */
 	libcameraMetadata_.clear();
@@ -1260,6 +1267,24 @@ void IpaBase::applyControls(const ControlList &controls)
 			statsMetadataOutput_ = ctrl.second.get<bool>();
 			break;
 
+		case controls::rpi::SYNC_MODE: {
+			SyncAlgorithm *sync =  dynamic_cast<SyncAlgorithm *>(controller_.getAlgorithm("sync"));
+
+			if (sync) {
+				int mode = ctrl.second.get<int32_t>();
+				SyncAlgorithm::Mode m = SyncAlgorithm::Mode::Off;
+				if (mode == controls::rpi::SyncModeServer) {
+					m = SyncAlgorithm::Mode::Server;
+					LOG(IPARPI, Info) << "Seync mode set to server";
+				} else if (mode == controls::rpi::SyncModeClient) {
+					m = SyncAlgorithm::Mode::Client;
+					LOG(IPARPI, Info) << "Seync mode set to client";
+				}
+				sync->setMode(m);
+			}
+			break;
+		}
+
 		default:
 			LOG(IPARPI, Warning)
 				<< "Ctrl " << controls::controls.at(ctrl.first)->name()
@@ -1306,6 +1331,7 @@ void IpaBase::fillSyncParams(const PrepareParams &params, unsigned int ipaContex
 	SyncParams syncParams;
 	syncParams.sequence = params.frameSequence;
 	syncParams.wallClock = *params.sensorControls.get(controls::rpi::SyncFrameWallClock);
+	syncParams.sensorTimestamp = *params.sensorControls.get(controls::SensorTimestamp);
 	rpiMetadata_[ipaContext].set("sync.params", syncParams);
 }
 
@@ -1541,10 +1567,7 @@ void IpaBase::applyAGC(const struct AgcStatus *agcStatus, ControlList &ctrls, Du
 	 * pipeline handler.
 	 */
 	frameLengths_.pop_front();
-	frameLengths_.push_back(helper_->exposure(vblank + mode_.height,
-						  helper_->hblankToLineLength(hblank)));
+	frameLengths_.push_back(helper_->exposure(vblank + mode_.height, helper_->hblankToLineLength(hblank)));
 }
-
 } /* namespace ipa::RPi */
-
 } /* namespace libcamera */
