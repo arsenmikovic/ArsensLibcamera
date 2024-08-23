@@ -47,4 +47,23 @@ controls:
       description: |
         Wall clock time (in micro seconds)
 
+  - SyncLag:
+      type: int64_t
+      description: |
+        Difference between expected sync time, and real sync time (in micro seconds)
+
+  - SyncMode:
+      type: int32_t
+      description: |
+        Tells the pi to either not use sync, act as server, or act as client
+      enum:
+        - name: SyncModeOff
+          value: 0
+          description: Sync not in use.
+        - name: SyncModeServer
+          value: 1
+          description: Sync on, act as server.
+        - name: SyncModeClient
+          value: 2
+          description: Sync on, act as client.
 ...

@@ -1189,6 +1189,16 @@
                     ]
                 }
             }
-        }
+        },
+        {  
+	    "rpi.sync":
+            {
+                "group": "224.0.0.1",
+		"sync_period" : 30,
+                "port": 12345 ,
+		"ready_frame" : 1000,
+		"line_fitting" : 50
+            }
+	}
     ]
 }
