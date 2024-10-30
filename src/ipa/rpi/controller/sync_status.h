@@ -13,10 +13,13 @@ struct SyncParams {
 	uint64_t wallClock;
 	/* Capture sequence number */
 	uint64_t sequence;
+
+	uint64_t sensorTimestamp;
 };
 
 struct SyncStatus {
 	libcamera::utils::Duration frameDurationOffset;
+	int64_t syncLag;
 	bool ready;
 };
 
