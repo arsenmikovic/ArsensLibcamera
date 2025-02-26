@@ -24,6 +24,7 @@ public:
 	SyncAlgorithm(Controller *controller)
 		: Algorithm(controller) {}
 	virtual void setFrameDuration(libcamera::utils::Duration frameDuration) = 0;
+	virtual void setMode(Mode mode) = 0;
 };
 
 } /* namespace RPiController */

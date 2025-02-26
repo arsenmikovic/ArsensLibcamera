@@ -1687,8 +1687,8 @@ void PiSPCameraData::cfeBufferDequeue(FrameBuffer *buffer)
 			dmabufSyncStart(buffer->planes()[0].fd);
 			do16BitEndianSwap(mem, width, height, stride);
 			dmabufSyncEnd(buffer->planes()[0].fd);
-		}
 
+		}
 		/*
 		 * Lookup the sensor controls used for this frame sequence from
 		 * DelayedControl and queue them along with the frame buffer.

@@ -1,14 +1,9 @@
-/* SPDX-License-Identifier: BSD-2-Clause */
-/*
- * Copyright (C) 2019-2021, Raspberry Pi Ltd
- *
- * sdn.cpp - SDN (spatial denoise) control algorithm
- */
 #include "sync.h"
 
 #include <cctype>
 #include <chrono>
 #include <fcntl.h>
+#include <list>
 #include <map>
 #include <strings.h>
 #include <unistd.h>
@@ -18,6 +13,7 @@
 
 #include "sync_status.h"
 
+using namespace std;
 using namespace std::chrono_literals;
 using namespace RPiController;
 using namespace libcamera;
@@ -27,9 +23,49 @@ LOG_DEFINE_CATEGORY(RPiSync)
 #define NAME "rpi.sync"
 
 const char *DefaultGroup = "239.255.255.250";
-constexpr unsigned int DefaultPort = 32723;
+constexpr unsigned int DefaultPort = 10000;
 constexpr unsigned int DefaultSyncPeriod = 30;
 constexpr unsigned int DefaultReadyFrame = 1000;
+constexpr unsigned int DefaultLineFitting = 100;
+
+/* Returns IP adress of the devide we are on */
+std::string local_address_IP()
+{
+    const char* google_dns_server = "8.8.8.8";
+    int dns_port = 53;
+
+    struct sockaddr_in serv;
+    int sock = socket(AF_INET, SOCK_DGRAM, 0);
+
+    //Socket could not be created
+    if (sock < 0)
+    {
+        LOG(RPiSync, Debug) << "Socket error";
+    }
+
+    memset(&serv, 0, sizeof(serv));
+    serv.sin_family = AF_INET;
+    serv.sin_addr.s_addr = inet_addr(google_dns_server);
+    serv.sin_port = htons(dns_port);
+
+    int err = connect(sock, (const struct sockaddr*)&serv, sizeof(serv));
+    if (err < 0)
+    {
+        LOG(RPiSync, Debug) << "Socket error";
+    }
+
+    struct sockaddr_in name;
+    socklen_t namelen = sizeof(name);
+    err = getsockname(sock, (struct sockaddr*)&name, &namelen);
+
+    char buffer[80];
+    const char* p = inet_ntop(AF_INET, &name.sin_addr, buffer, 80);
+	if (p != NULL){}
+    close(sock);
+	return buffer;
+}
+
+
 
 Sync::Sync(Controller *controller)
 	: SyncAlgorithm(controller), mode_(Mode::Off), socket_(-1), frameDuration_(0s), frameCount_(0)
@@ -46,42 +82,27 @@ char const *Sync::name() const
 {
 	return NAME;
 }
-
+/* This reads from json file and intitiaises server and client */
 int Sync::read(const libcamera::YamlObject &params)
 {
-	static const std::map<std::string, Mode> modeMapping = {
-		{ "off", Mode::Off },
-		{ "client", Mode::Client },
-		{ "server", Mode::Server },
-	};
-
-	std::string mode = params["mode"].get<std::string>("off");
-	std::transform(mode.begin(), mode.end(), mode.begin(),
-		       [](unsigned char c) { return std::tolower(c); });
-
-	auto it = modeMapping.find(mode);
-	if (it == modeMapping.end()) {
-		LOG(RPiSync, Error) << "Invalid mode specificed: " << mode;
-		return -EINVAL;
-	}
-	mode_ = it->second;
-
 	group_ = params["group"].get<std::string>(DefaultGroup);
 	port_ = params["port"].get<uint16_t>(DefaultPort);
 	syncPeriod_ = params["sync_period"].get<uint32_t>(DefaultSyncPeriod);
 	readyFrame_ = params["ready_frame"].get<uint32_t>(DefaultReadyFrame);
-
+	lineFitting_ = params["line_fitting"].get<uint32_t>(DefaultLineFitting);
+	
 	return 0;
 }
 
-void Sync::initialise()
+
+void Sync::initialiseSocket()
 {
 	socket_ = socket(AF_INET, SOCK_DGRAM, 0);
 	if (socket_ < 0) {
 		LOG(RPiSync, Error) << "Unable to create server socket.";
 		return;
 	}
-
+	LOG(RPiSync, Info) << "Setting socket.";
 	memset(&addr_, 0, sizeof(addr_));
         addr_.sin_family = AF_INET;
         addr_.sin_addr.s_addr = mode_ == Mode::Client ? htonl(INADDR_ANY) : inet_addr(group_.c_str());
@@ -126,93 +147,190 @@ void Sync::switchMode([[maybe_unused]] CameraMode const &cameraMode, [[maybe_unu
 	readyCountdown_ = 0;
 }
 
+
+/*
+ * Camera sync algorithm.
+ *     Server - there is a single server that sends framerate timing information over the network to any
+ *         clients that are listening. It also signals when it will send a "everything is synchronised, now go"
+ *         message back to the algorithm.
+ *     Client - there may be many clients, either on the same Pi or different ones. They match their
+ *         framerates to the server, and indicate when to "go" at the same instant as the server. 
+ */
 void Sync::process([[maybe_unused]] StatisticsPtr &stats, Metadata *imageMetadata)
 {
 	SyncPayload payload;
-	SyncParams local {};
-	SyncStatus status {};
+	SyncParams local{};
+	SyncStatus status{};
 	imageMetadata->get("sync.params", local);
-
 	if (!frameDuration_) {
 		LOG(RPiSync, Error) << "Sync frame duration not set!";
 		return;
 	}
+	if (mode_ == Mode::Off) {
+		return;
+	}
+	/* Initialises sockets when the mdoe_ is set, becasue it needs to know whether it is setting up client or server */
+	if (!socketInitialised_) {
+		socketInitialised_ = true;
+		Sync::initialiseSocket();
+		nextSensorTimestamp_ = local.wallClock;
+	}
 
 	if (mode_ == Mode::Server) {
+		/* 
+		This varibale is the modelled wall clock
+		We use the local.wall as baseline that swe subtract from every future value to avoid 12 digit numbers 
+		(because if we used just wall clock as values in the list, it blows up, so we use WClock-Baselien)
+		 */
+		trendingClock_.initialize(local.wallClock, local.sensorTimestamp, syncPeriod_, lineFitting_);
+
+		/* Takse care of lost frames so to updates the counters correctly */
+		int frameDiff = (local.wallClock - lastWallClock_ - frameDuration_.get<std::micro>() * 0.5) / frameDuration_.get<std::micro>();
+		if (frameDiff > 0 && lastWallClock_) {
+			frameCount_ += frameDiff;
+		}
+		lastWallClock_ = local.wallClock;
+
 		if (!syncReady_ && !(readyFrame_ - frameCount_)) {
-			LOG(RPiSync, Info) << "Sync ready at frame " << frameCount_ << " ts " <<  payload.wallClock;
-			syncReady_ = true;
+			if (local.wallClock > syncTime_ - frameDuration_.get<std::micro>() * 0.5 && syncTime_) {
+				LOG(RPiSync, Info) << "Sync ready is true";
+				syncReady_ = true;
+				/* lag tells us how late from expected start we acctually started */
+				lag_ = local.wallClock - syncTime_;
+				if (local.wallClock > syncTime_ + frameDuration_.get<std::micro>() * 0.5) {
+					LOG(RPiSync, Warning) << "Frame has been lost, sync started with lag of: " << lag_ << " us";
+				} else {
+					LOG(RPiSync, Info) << "Sync started without lag";
+				}
+			}
+		} else if (!syncReady_) {
+			syncTime_ = local.wallClock + frameDuration_.get<std::micro>() * (readyFrame_ - frameCount_);
 		}
 
 		if (!(frameCount_ % syncPeriod_)) {
-			static int lastWallClock = local.wallClock;
+			/* Preparing and sending packet */
 			payload.sequence = local.sequence;
-			payload.wallClock = local.wallClock;
+			payload.wallClock = trendingClock_.modelledWallClock(local.wallClock, local.sensorTimestamp, local.sequence);
+			payload.sensorTimestamp = local.sensorTimestamp;
 			payload.nextSequence = local.sequence + syncPeriod_;
-			payload.nextWallClock = local.wallClock + frameDuration_.get<std::micro>() * syncPeriod_;
+			payload.nextWallClock = payload.wallClock + frameDuration_.get<std::micro>() * syncPeriod_;
 			payload.readyFrame = std::max<int32_t>(0, readyFrame_ - frameCount_);
+			int64_t jitter = payload.wallClock - nextSensorTimestamp_;
+			nextSensorTimestamp_ = payload.nextWallClock;
 
-			int jitter = payload.wallClock - lastWallClock;
-			lastWallClock = payload.nextWallClock;
-
-			if (sendto(socket_, &payload, sizeof(payload), 0, (const sockaddr *)&addr_, sizeof(addr_)) < 0)
-				LOG(RPiSync, Error) << "Send error!";
-			else
-				LOG(RPiSync, Info) << "Sent message: seq " << payload.sequence << " ts " << payload.wallClock << " jitter " << jitter << "us"
-						<< " : next seq " << payload.nextSequence << " ts " << payload.nextWallClock << " : ready frame " << payload.readyFrame;
+			if (sendto(socket_, &payload, sizeof(payload), 0, (const sockaddr *)&addr_, sizeof(addr_)) < 0) {
+				LOG(RPiSync, Error) << "Send error! " << strerror(errno);
+			} else {
+				LOG(RPiSync, Info) << "Sent message: seq " << payload.sequence << " jitter " << jitter << "us" 
+									<< " : ready frame " << payload.readyFrame;
+			}
 		}
 	} else if (mode_ == Mode::Client) {
-
-		static int frames = 0;
+		/* 
+		Initialising trending error whic follows the modelled error after sync 1000 frames
+		Trensing clock as before modells the wall clock to remove jitter
+		We use the local.wall clcok in ordeer to use smaller numbers and not 12 digit ons in the modelling, we subtract this constant initial wall clcok from all values
+		*/
+		trendingError_.initialize(syncPeriod_, lineFitting_);
+		trendingClock_.initialize(local.wallClock, local.sensorTimestamp, syncPeriod_, lineFitting_);
 		socklen_t addrlen = sizeof(addr_);
 
 		while (true) {
-			int64_t lastWallClock = lastPayload_.nextWallClock;
 			int ret = recvfrom(socket_, &lastPayload_, sizeof(lastPayload_), 0, (struct sockaddr *)&addr_, &addrlen);
 
 			if (ret > 0) {
-				int jitter = lastPayload_.wallClock - lastWallClock;
-				LOG(RPiSync, Info) << "Receive message: seq " << lastPayload_.sequence << " ts " << lastPayload_.wallClock
-						<< " server jitter " << jitter << "us"
-						<< " : next seq " << lastPayload_.nextSequence << " ts " << lastPayload_.nextWallClock
-						<< " est duration " << (lastPayload_.nextWallClock - lastPayload_.wallClock) * 1us / (lastPayload_.nextSequence - lastPayload_.sequence)
-						<< " : readyFrame " << lastPayload_.readyFrame;
+				/* 
+				Check the ip adress of server and client and tells us whether we are working on same or different pi.
+				This ony happens once, IP server is extracted from packet, and IP client using function local_address_IP
+				*/
+				if (!IPCheck_) {
+					char srcIP[INET_ADDRSTRLEN];
+					inet_ntop(AF_INET, &(addr_.sin_addr), srcIP, INET_ADDRSTRLEN);
+					std::string serverIP = srcIP;
+
+					std::string clientIP = local_address_IP();
+
+					if (serverIP == clientIP) {
+						usingWallClock_ = false;
+						LOG(RPiSync, Info) << "Using server time stamp ";
+					} else {
+						LOG(RPiSync, Info) << "Using modelled wall clock ";
+					}
+					LOG(RPiSync, Info) <<"Sever ip: " << serverIP << " client ip: " <<clientIP; 
+					IPCheck_ = true;
+				}
+
+				if (!syncReady_) {
 					state_ = State::Correcting;
-					frames = 0;						
+				}
 
-					if (!syncReady_)
-						readyCountdown_ = lastPayload_.readyFrame + frameCount_;
+				frames_ = 0;	
 
-				} else
-					break;
+				/* If we use one pi, we use server Timestamp. If two pi's then modelled wall clock*/
+				if (usingWallClock_) {
+					modelledWallClockValue_ = trendingClock_.modelledWallClock(local.wallClock, local.sensorTimestamp, local.sequence);
+					lastWallClockValue_ = lastPayload_.wallClock;
+				} else {
+					modelledWallClockValue_ = (local.sensorTimestamp) / 1000;
+					lastWallClockValue_ = (lastPayload_.sensorTimestamp) / 1000;
+				}
+
+				lastPayloadFrameDuration_ = (lastPayload_.nextWallClock - lastPayload_.wallClock) * 1us / (lastPayload_.nextSequence - lastPayload_.sequence);
+				std::chrono::microseconds delta = (modelledWallClockValue_ * 1us) - (lastWallClockValue_ * 1us);
+				unsigned int mul = (delta + lastPayloadFrameDuration_ / 2) / lastPayloadFrameDuration_;
+				
+				delta_mod_ = delta - mul * lastPayloadFrameDuration_;				
+
+				if (!syncReady_)
+					readyCountdown_ = lastPayload_.readyFrame + frameCount_;
+				
+				if (!syncReady_ && lastPayload_.readyFrame) {
+					expected_ = lastPayload_.wallClock * 1us + lastPayload_.readyFrame * lastPayloadFrameDuration_;
+				}
+			} else {
+				
+				break;
+			}
+		}
+		if (syncReady_ && !frames_) {
+			/* Modelled error, trending Error creates new value to add to list and updates slope to calculate this trending value*/
+			delta_mod_ = trendingError_.trendingError(lastWallClockValue_ * 1us, modelledWallClockValue_ * 1us, lastPayloadFrameDuration_, local.sequence);
+			if (abs(delta_mod_) > 50us) {
+				trendingError_.updateValues(delta_mod_);
+				state_ = State::Correcting;
+			}
 		}
 
-		std::chrono::microseconds lastPayloadFrameDuration = (lastPayload_.nextWallClock - lastPayload_.wallClock) * 1us / (lastPayload_.nextSequence - lastPayload_.sequence);
-		std::chrono::microseconds delta = (local.wallClock * 1us) - ((lastPayload_.wallClock * 1us) + frames * lastPayloadFrameDuration);
-		unsigned int mul = (delta + lastPayloadFrameDuration / 2) / lastPayloadFrameDuration;
-		std::chrono::microseconds delta_mod = delta - mul * lastPayloadFrameDuration;
-		LOG(RPiSync, Info) << "Current frame : seq " << local.sequence << " ts " << local.wallClock << "us"
-				   << " frame offset " << frames << " est delta " << delta << " (mod) " << delta_mod << " ready countdown " << readyCountdown_;
+		if (state_ == State::Correcting) {
+			LOG(RPiSync, Info) << "Correcting by " << delta_mod_;
 
-		if (state_ == State::Correcting)  {
-			status.frameDurationOffset = delta_mod;
+			status.frameDurationOffset = delta_mod_;
 			state_ = State::Stabilising;
-			LOG(RPiSync, Info) << "Correcting offset " << status.frameDurationOffset;
-
 		} else if (state_ == State::Stabilising) {
-			status.frameDurationOffset = 0s;
-			LOG(RPiSync, Info) << "Stabilising duration ";		
+
+			status.frameDurationOffset = 0s;		
 			state_ = State::Idle;
 		}
 
-		if (!syncReady_ && readyCountdown_ && !(readyCountdown_ - frameCount_)) {
+		/* We now say sync ready when the wall clock is in the range of he expected sync wall clock */
+		if (!syncReady_ && local.wallClock * 1us > expected_ - lastPayloadFrameDuration_ / 2 && expected_ != 0us) {
 			syncReady_ = true;
-			LOG(RPiSync, Info) << "Sync ready at frame " << frameCount_ << " ts " <<  payload.wallClock;
-		}				
-
-		frames++;
+			LOG(RPiSync, Error) << "Sync ready is true";
+			if (usingWallClock_) {
+				LOG(RPiSync, Debug) << "Using trending wall clock";
+				LOG(RPiSync, Debug) << "Wall clock is " << local.wallClock;
+			}
+			trendingClock_.clear();
+			lag_ = local.wallClock - expected_.count();
+			if (local.wallClock * 1us > expected_ + lastPayloadFrameDuration_ / 2) {
+				LOG(RPiSync, Warning) << "Frame has been lost, sync started with lag of: " << lag_ << " us";
+			} else {
+				LOG(RPiSync, Info) << "Sync started without lag";
+			}
+		}
+		frames_++;
 	}
-
+	status.syncLag = lag_;
 	status.ready = syncReady_;
 	imageMetadata->set("sync.status", status);
 	frameCount_++;
